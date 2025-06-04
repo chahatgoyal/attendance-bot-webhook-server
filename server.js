@@ -184,6 +184,61 @@ async function isSuperAdmin(phoneNumber) {
   }
 }
 
+// Add this helper function to get pending trainees
+async function getPendingTrainees() {
+  try {
+    const pendingSnapshot = await db.collection("pendingTrainees")
+      .where("status", "==", "pending_join")
+      .orderBy("createdAt", "desc")
+      .get();
+    
+    if (pendingSnapshot.empty) {
+      return {
+        trainees: [],
+        total: 0
+      };
+    }
+
+    const pendingTrainees = pendingSnapshot.docs.map(doc => {
+      const data = doc.data();
+      return {
+        ...data,
+        createdAt: data.createdAt.toDate(),
+        daysPending: Math.floor((new Date() - data.createdAt.toDate()) / (1000 * 60 * 60 * 24))
+      };
+    });
+
+    return {
+      trainees: pendingTrainees,
+      total: pendingTrainees.length
+    };
+  } catch (err) {
+    console.error("Error fetching pending trainees:", err);
+    throw err;
+  }
+}
+
+function formatPendingTraineesList(data) {
+  if (data.trainees.length === 0) {
+    return "No pending trainees found.";
+  }
+
+  let response = `⏳ Pending Trainees\n\n`;
+  data.trainees.forEach((trainee, index) => {
+    response += `${index + 1}. ${trainee.name}\n`;
+    response += `   📱 ${trainee.phoneNumber}\n`;
+    response += `   🎯 ${trainee.totalSessions} sessions\n`;
+    response += `   📅 Created: ${trainee.createdAt.toLocaleDateString()}\n`;
+    response += `   ⏳ Pending for: ${trainee.daysPending} days\n`;
+    response += `   🔗 Join Link: ${trainee.joinLink}\n\n`;
+  });
+
+  response += `\nTotal: ${data.total} pending trainees`;
+
+  return response;
+}
+
+// Update the admin options
 function generateAdminOptions() {
   return `🎯 Admin Panel\n
 Options (reply with number):
@@ -194,12 +249,14 @@ Options (reply with number):
 5. List active trainees
 6. Export trainees to CSV
 7. View trainees with low sessions
-8. Help
-9. Create sample test data
+8. View pending trainees
+9. Help
+10. Create sample test data
 
 Example: Send "1" to onboard a new trainee.`;
 }
 
+// Update the help message
 function generateHelpMessage() {
   return `📚 Admin Panel Help\n
 1. Onboard trainee
@@ -226,9 +283,13 @@ function generateHelpMessage() {
    - Check trainees with few sessions remaining
    - Set custom session threshold
    - See who needs to renew\n
-8. Help
+8. View pending trainees
+   - See trainees who haven't joined yet
+   - Check pending duration
+   - Access join links\n
+9. Help
    - Show this help message\n
-9. Create sample test data
+10. Create sample test data
    - Add 10 sample trainees
    - Useful for testing features\n
 Send "back" to return to main menu.`;
@@ -341,25 +402,30 @@ Enter the maximum number of remaining sessions to check (1-50):
 
 Example: 5 (to see trainees with 5 or fewer sessions remaining)`;
       } else if (message === '8') {
+        console.log(`[Operation] Fetching pending trainees for ${phoneNumber}`);
+        const data = await getPendingTrainees();
+        response = formatPendingTraineesList(data);
+        adminStates.set(phoneNumber, 'initial');
+        logStateChange(phoneNumber, oldState, 'initial', 'Pending trainees viewed');
+      } else if (message === '9') {
         adminStates.set(phoneNumber, 'help');
         logStateChange(phoneNumber, oldState, 'help', message);
         response = generateHelpMessage();
-      } else if (message === '9') {
+      } else if (message === '10') {
         try {
           console.log(`[Operation] Creating sample data for ${phoneNumber}`);
           response = await createSampleTestData();
-          response += `\n\n${generateAdminOptions()}`;
           adminStates.set(phoneNumber, 'initial');
           logStateChange(phoneNumber, oldState, 'initial', 'Sample data created');
         } catch (err) {
           console.error("[Error] Sample Data Creation:", err);
-          response = `❌ Error creating sample data: ${err.message}\n\n${generateAdminOptions()}`;
+          response = `❌ Error creating sample data: ${err.message}`;
           adminStates.set(phoneNumber, 'initial');
           logStateChange(phoneNumber, oldState, 'initial', 'Sample data error');
         }
       } else {
         console.log(`[Invalid Option] ${phoneNumber} sent: ${message}`);
-        response = `❌ Invalid option. Please reply with a number (1-9).\n\n${generateAdminOptions()}`;
+        response = `❌ Invalid option. Please reply with a number (1-10).\n\n${generateAdminOptions()}`;
       }
       break;
 
@@ -368,7 +434,7 @@ Example: 5 (to see trainees with 5 or fewer sessions remaining)`;
       if (message.toLowerCase() === 'back') {
         adminStates.set(phoneNumber, 'initial');
         logStateChange(phoneNumber, oldState, 'initial', 'Back from list view');
-        response = generateAdminOptions();
+        response = "Returned to main menu. Send 'Hi' to see options.";
       } else if (message.toLowerCase() === 'next') {
         const currentPage = adminTempData.get(phoneNumber)?.page || 1;
         console.log(`[List Active] Fetching page ${currentPage + 1} for ${phoneNumber}`);
@@ -640,7 +706,7 @@ Sessions: 10`;
 New details:
 - Name: ${newName}
 - Phone: ${traineePhone}
-- Remaining Sessions: ${newSessions}\n\n${generateAdminOptions()}`;
+- Remaining Sessions: ${newSessions}`;
         setAdminState(phoneNumber, 'initial', 'Trainee updated successfully');
         adminTempData.delete(phoneNumber);
       } catch (err) {
@@ -670,7 +736,7 @@ Sessions: [New number of remaining sessions]`;
             archivedBy: phoneNumber
           });
           await traineeSnapshot.docs[0].ref.delete();
-          response = `✅ Trainee ${traineeData.name} has been removed and archived.\n\n${generateAdminOptions()}`;
+          response = `✅ Trainee ${traineeData.name} has been removed and archived.`;
           adminStates.set(phoneNumber, 'initial');
           logStateChange(phoneNumber, oldState, 'initial', 'Trainee removed successfully');
         }
@@ -691,7 +757,7 @@ Phone: [WhatsApp number with country code]`;
 
         console.log(`[Low Sessions] Fetching trainees with ${sessions} or fewer sessions`);
         const data = await getExpiringMemberships(sessions);
-        response = formatExpiringMembersList(data) + `\n\n${generateAdminOptions()}`;
+        response = formatExpiringMembersList(data);
         adminStates.set(phoneNumber, 'initial');
         logStateChange(phoneNumber, oldState, 'initial', 'Low sessions list viewed');
       } catch (err) {
@@ -737,58 +803,6 @@ async function getCompletedTrainees() {
     return "Error fetching completed trainees list.";
   }
 }
-
-app.post("/webhook", async (req, res) => {
-  const { From, Body } = req.body;
-  const formattedFrom = formatPhoneNumber(From);
-  
-  console.log("Webhook received:", {
-    from: From,
-    formattedFrom: formattedFrom,
-    body: Body,
-    timestamp: new Date().toISOString(),
-    isTestNumber: process.env.NODE_ENV === 'development'
-  });
-
-  try {
-    // CASE 1: Handle sandbox join command (highest priority)
-    if (Body.toLowerCase().startsWith('join')) {
-      await handleSandboxJoin(formattedFrom, Body, res);
-      return;
-    }
-    
-    // CASE 2: Handle admin in conversation (second priority)
-    if (adminStates.has(formattedFrom)) {
-      await handleAdminInConversation(formattedFrom, Body, res);
-      return;
-    }
-    
-    // CASE 3: Handle attendance responses (third priority)
-    if (Body === "1" || Body === "2") {
-      const handled = await handleAttendanceResponse(formattedFrom, Body, res);
-      if (handled) return;
-    }
-    
-    // CASE 4: Handle "Hi" command (fourth priority)
-    if (Body.trim().toLowerCase() === "hi") {
-      await handleHiCommand(formattedFrom, res);
-      return;
-    }
-    
-    // CASE 5: Default fallback for unrecognized messages
-    console.log(`Unrecognized message pattern from ${formattedFrom}: "${Body}"`);
-    res.set("Content-Type", "text/xml");
-    res.send(`<?xml version="1.0" encoding="UTF-8"?>
-      <Response>
-        <Message>I didn't understand that command. Send "Hi" to see available options.</Message>
-      </Response>`);
-    
-  } catch (err) {
-    console.error("Error processing webhook:", err);
-    res.set("Content-Type", "text/xml");
-    res.send("<Response></Response>");
-  }
-});
 
 // Modify the handleSandboxJoin function to remove TTL check
 async function handleSandboxJoin(phoneNumber, message, res) {
@@ -971,7 +985,6 @@ async function handleHiCommand(phoneNumber, res) {
   if (isAdmin) {
     // Handle admin "Hi"
     console.log("User is admin, sending admin options...");
-    adminStates.set(phoneNumber, 'initial');
     const response = `<?xml version="1.0" encoding="UTF-8"?>
       <Response>
         <Message>👋 Hello Admin!\n\n${generateAdminOptions()}</Message>
@@ -1341,6 +1354,67 @@ app.get('/download-csv', async (req, res) => {
   } catch (err) {
     console.error('Error downloading CSV:', err);
     res.status(500).send('Error generating CSV file');
+  }
+});
+
+// Modify the webhook handler to properly handle admin messages
+app.post("/webhook", async (req, res) => {
+  const { From, Body } = req.body;
+  const formattedFrom = formatPhoneNumber(From);
+  
+  console.log("Webhook received:", {
+    from: From,
+    formattedFrom: formattedFrom,
+    body: Body,
+    timestamp: new Date().toISOString(),
+    isTestNumber: process.env.NODE_ENV === 'development'
+  });
+
+  try {
+    // CASE 1: Handle "Hi" command (highest priority)
+    if (Body.trim().toLowerCase() === "hi") {
+      await handleHiCommand(formattedFrom, res);
+      return;
+    }
+    
+    // CASE 2: Handle sandbox join command
+    if (Body.toLowerCase().startsWith('join')) {
+      await handleSandboxJoin(formattedFrom, Body, res);
+      return;
+    }
+    
+    // CASE 3: Check if user is admin
+    const isAdmin = await isSuperAdmin(formattedFrom);
+    
+    if (isAdmin) {
+      // Handle admin messages
+      if (adminStates.has(formattedFrom)) {
+        await handleAdminInConversation(formattedFrom, Body, res);
+      } else {
+        // If admin but no state, treat as new admin command
+        await handleAdminInConversation(formattedFrom, Body, res);
+      }
+      return;
+    }
+    
+    // CASE 4: Handle attendance responses (only for non-admin users)
+    if (Body === "1" || Body === "2") {
+      const handled = await handleAttendanceResponse(formattedFrom, Body, res);
+      if (handled) return;
+    }
+    
+    // CASE 5: Default fallback for unrecognized messages
+    console.log(`Unrecognized message pattern from ${formattedFrom}: "${Body}"`);
+    res.set("Content-Type", "text/xml");
+    res.send(`<?xml version="1.0" encoding="UTF-8"?>
+      <Response>
+        <Message>I didn't understand that command. Send "Hi" to see available options.</Message>
+      </Response>`);
+    
+  } catch (err) {
+    console.error("Error processing webhook:", err);
+    res.set("Content-Type", "text/xml");
+    res.send("<Response></Response>");
   }
 });
 
