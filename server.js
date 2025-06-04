@@ -347,7 +347,7 @@ Sessions: 10`;
       } else if (message === '2') {
         console.log(`[Operation] Fetching completed trainees for ${phoneNumber}`);
         const trainees = await getCompletedTrainees();
-        response = trainees + '\n\n' + generateAdminOptions();
+        response = trainees;
         adminStates.set(phoneNumber, 'initial');
         logStateChange(phoneNumber, oldState, 'initial', 'Completed trainees fetch');
       } else if (message === '3') {
@@ -374,7 +374,7 @@ Phone: [WhatsApp number with country code]`;
           console.log(`[Operation] Generating CSV for ${phoneNumber}`);
           const csvContent = await generateTraineesCSV();
           if (!csvContent) {
-            response = `❌ No active trainees found to export.\n\n${generateAdminOptions()}`;
+            response = `❌ No active trainees found to export.`;
             adminStates.set(phoneNumber, 'initial');
             logStateChange(phoneNumber, oldState, 'initial', 'No trainees found for CSV');
           } else {
@@ -384,13 +384,13 @@ Phone: [WhatsApp number with country code]`;
               from: `whatsapp:${process.env.TWILIO_FROM_WHATSAPP}`,
               to: `whatsapp:${phoneNumber}`
             });
-            response = `✅ Download link has been sent to your WhatsApp.\n\n${generateAdminOptions()}`;
+            response = `✅ Download link has been sent to your WhatsApp.`;
             adminStates.set(phoneNumber, 'initial');
             logStateChange(phoneNumber, oldState, 'initial', 'CSV link sent');
           }
         } catch (err) {
           console.error("[Error] CSV Generation:", err);
-          response = `❌ Error generating CSV file: ${err.message}\n\n${generateAdminOptions()}`;
+          response = `❌ Error generating CSV file: ${err.message}`;
           adminStates.set(phoneNumber, 'initial');
           logStateChange(phoneNumber, oldState, 'initial', 'CSV generation error');
         }
@@ -425,7 +425,7 @@ Example: 5 (to see trainees with 5 or fewer sessions remaining)`;
         }
       } else {
         console.log(`[Invalid Option] ${phoneNumber} sent: ${message}`);
-        response = `❌ Invalid option. Please reply with a number (1-10).\n\n${generateAdminOptions()}`;
+        response = `❌ Invalid option. Please reply with a number (1-10).`;
       }
       break;
 
@@ -449,7 +449,7 @@ Example: 5 (to see trainees with 5 or fewer sessions remaining)`;
     case 'help':
       if (message.toLowerCase() === 'back') {
         adminStates.set(phoneNumber, 'initial');
-        response = generateAdminOptions();
+        response = "Returned to main menu. Send 'Hi' to see options.";
       } else {
         response = `Please send "back" to return to main menu.\n\n${generateHelpMessage()}`;
       }
@@ -531,14 +531,14 @@ Try again...`;
 
         // Check for duplicate trainee before proceeding
         if (await isDuplicateTrainee(traineePhone)) {
-          response = `❌ A trainee with this phone number already exists. Please verify the phone number and try again.\n\n${generateAdminOptions()}`;
+          response = `❌ A trainee with this phone number already exists. Please verify the phone number and try again.`;
           adminStates.set(phoneNumber, 'initial');
           break;
         }
 
         // Check for duplicate pending trainee
         if (await isDuplicatePendingTrainee(traineePhone)) {
-          response = `❌ A pending trainee with this phone number already exists. Please wait for them to complete the joining process or verify the phone number.\n\n${generateAdminOptions()}`;
+          response = `❌ A pending trainee with this phone number already exists. Please wait for them to complete the joining process or verify the phone number.`;
           adminStates.set(phoneNumber, 'initial');
           break;
         }
@@ -580,8 +580,7 @@ ${joinLink}\n
 ⚠️ Important:
 - Trainee must click this link to join
 - They will be automatically added once they join
-- Their ${sessions} sessions will be activated after joining\n
-${generateAdminOptions()}`;
+- Their ${sessions} sessions will be activated after joining`;
         adminStates.set(phoneNumber, 'initial');
         logStateChange(phoneNumber, oldState, 'initial', 'Trainee onboarded successfully');
       } catch (err) {
@@ -594,7 +593,6 @@ Make sure to follow the exact format shown above.`;
 
     case 'list_trainees':
       response = await getCompletedTrainees();
-      response += `\n\n${generateAdminOptions()}`;
       adminStates.set(phoneNumber, 'initial');
       break;
 
@@ -768,7 +766,7 @@ Phone: [WhatsApp number with country code]`;
 
     default:
       console.log(`[Default State] ${phoneNumber} in unknown state: ${oldState}`);
-      response = generateAdminOptions();
+      response = "Returned to main menu. Send 'Hi' to see options.";
       adminStates.set(phoneNumber, 'initial');
       logStateChange(phoneNumber, oldState, 'initial', 'Reset to initial');
   }
