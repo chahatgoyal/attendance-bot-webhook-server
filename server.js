@@ -804,17 +804,63 @@ async function getCompletedTrainees() {
 
 // Modify the handleSandboxJoin function to remove TTL check
 async function handleSandboxJoin(phoneNumber, message, res) {
-  console.log("Received join command from:", phoneNumber);
+  console.log("handleSandboxJoin called with:", {
+    phoneNumber,
+    message,
+    environment: process.env.NODE_ENV,
+    sandboxCode: process.env.NODE_ENV === 'development' 
+      ? process.env.TWILIO_TEST_SANDBOX_CODE 
+      : process.env.TWILIO_SANDBOX_CODE
+  });
+  
+  // Extract sandbox code from message - be more lenient with format
+  const sandboxCode = process.env.NODE_ENV === 'development' 
+    ? process.env.TWILIO_TEST_SANDBOX_CODE 
+    : process.env.TWILIO_SANDBOX_CODE;
+  
+  // More lenient join command verification
+  const joinMatch = message.toLowerCase().match(/join\s*(\w+)/);
+  console.log("Join command match result:", {
+    match: joinMatch,
+    expectedCode: sandboxCode,
+    receivedCode: joinMatch ? joinMatch[1] : null
+  });
+
+  if (!joinMatch || joinMatch[1] !== sandboxCode) {
+    console.log(`Invalid join command format or sandbox code for ${phoneNumber}`);
+    const response = `<?xml version="1.0" encoding="UTF-8"?>
+      <Response>
+        <Message>Invalid join command. Please use the exact link provided or send "join ${sandboxCode}".</Message>
+      </Response>`;
+    res.set("Content-Type", "text/xml");
+    res.send(response);
+    return;
+  }
   
   // Check if this is a pending trainee
+  console.log(`Checking for pending trainee: ${phoneNumber}`);
   const pendingTrainee = await db.collection("pendingTrainees")
     .where("phoneNumber", "==", phoneNumber)
     .where("status", "==", "pending_join")
     .get();
 
+  console.log("Pending trainee check result:", {
+    found: !pendingTrainee.empty,
+    count: pendingTrainee.size,
+    phoneNumber
+  });
+
   if (!pendingTrainee.empty) {
+    console.log(`Found pending trainee for ${phoneNumber}, processing activation`);
+    
     // Check for duplicate trainee before moving from pending to active
-    if (await isDuplicateTrainee(phoneNumber)) {
+    const isDuplicate = await isDuplicateTrainee(phoneNumber);
+    console.log("Duplicate trainee check:", {
+      isDuplicate,
+      phoneNumber
+    });
+
+    if (isDuplicate) {
       console.log(`Duplicate trainee found for ${phoneNumber}, skipping activation`);
       const response = `<?xml version="1.0" encoding="UTF-8"?>
         <Response>
@@ -825,31 +871,57 @@ async function handleSandboxJoin(phoneNumber, message, res) {
       return;
     }
 
-    // Move trainee from pending to active
-    const traineeData = pendingTrainee.docs[0].data();
-    await db.collection("trainees").add({
-      name: traineeData.name,
-      phoneNumber: phoneNumber,
-      totalSessions: traineeData.totalSessions,
-      remainingSessions: traineeData.remainingSessions,
-      joinedDate: new Date(),
-      status: 'active'
-    });
+    try {
+      // Move trainee from pending to active
+      const traineeData = pendingTrainee.docs[0].data();
+      console.log(`Activating trainee:`, {
+        name: traineeData.name,
+        phoneNumber,
+        totalSessions: traineeData.totalSessions,
+        remainingSessions: traineeData.remainingSessions
+      });
+      
+      const newTraineeRef = await db.collection("trainees").add({
+        name: traineeData.name,
+        phoneNumber: phoneNumber,
+        totalSessions: traineeData.totalSessions,
+        remainingSessions: traineeData.remainingSessions,
+        joinedDate: new Date(),
+        status: 'active',
+        environment: process.env.NODE_ENV
+      });
 
-    // Delete from pending
-    await pendingTrainee.docs[0].ref.delete();
+      console.log(`Created new trainee document:`, {
+        id: newTraineeRef.id,
+        phoneNumber
+      });
 
-    // Send welcome message
-    const response = `<?xml version="1.0" encoding="UTF-8"?>
-      <Response>
-        <Message>Welcome ${traineeData.name} to the Badminton Training Program! 🏸\n\nYou have ${traineeData.totalSessions} sessions available. Send "Hi" to get started.</Message>
-      </Response>`;
-    res.set("Content-Type", "text/xml");
-    res.send(response);
-    return;
+      // Delete from pending
+      await pendingTrainee.docs[0].ref.delete();
+      console.log(`Successfully moved ${traineeData.name} from pending to active trainees`);
+
+      // Send welcome message
+      const response = `<?xml version="1.0" encoding="UTF-8"?>
+        <Response>
+          <Message>Welcome ${traineeData.name} to the Badminton Training Program! 🏸\n\nYou have ${traineeData.totalSessions} sessions available. Send "Hi" to get started.</Message>
+        </Response>`;
+      res.set("Content-Type", "text/xml");
+      res.send(response);
+      return;
+    } catch (err) {
+      console.error(`Error activating trainee ${phoneNumber}:`, err);
+      const response = `<?xml version="1.0" encoding="UTF-8"?>
+        <Response>
+          <Message>Sorry, there was an error activating your account. Please contact the admin for assistance.</Message>
+        </Response>`;
+      res.set("Content-Type", "text/xml");
+      res.send(response);
+      return;
+    }
   }
 
   // Regular join response for non-pending users
+  console.log(`No pending trainee found for ${phoneNumber}, sending regular welcome message`);
   const response = `<?xml version="1.0" encoding="UTF-8"?>
     <Response>
       <Message>Welcome to the Badminton Training Program! You can now interact with our chatbot. Send "Hi" to get started.</Message>
@@ -1365,7 +1437,10 @@ app.post("/webhook", async (req, res) => {
     formattedFrom: formattedFrom,
     body: Body,
     timestamp: new Date().toISOString(),
-    isTestNumber: process.env.NODE_ENV === 'development'
+    isTestNumber: process.env.NODE_ENV === 'development',
+    sandboxCode: process.env.NODE_ENV === 'development' 
+      ? process.env.TWILIO_TEST_SANDBOX_CODE 
+      : process.env.TWILIO_SANDBOX_CODE
   });
 
   try {
@@ -1377,6 +1452,11 @@ app.post("/webhook", async (req, res) => {
     
     // CASE 2: Handle sandbox join command
     if (Body.toLowerCase().startsWith('join')) {
+      console.log("Processing join command:", {
+        phoneNumber: formattedFrom,
+        message: Body,
+        environment: process.env.NODE_ENV
+      });
       await handleSandboxJoin(formattedFrom, Body, res);
       return;
     }
