@@ -3,7 +3,6 @@ import dotenv from "dotenv";
 import bodyParser from "body-parser";
 import db from "./firebase.js"; // Import Firestore
 import twilio from "twilio";
-import cron from "node-cron";
 import https from 'https';
 import { exec } from 'child_process';
 import fs from 'fs';
@@ -174,10 +173,20 @@ function generateJoinLink(phoneNumber) {
   return `https://wa.me/${whatsappNumber}?text=join%20${sandboxCode}`;
 }
 
-async function isSuperAdmin(phoneNumber) {
+async function getSuperAdminDetails(phoneNumber) {
   try {
     const adminSnapshot = await db.collection("superAdmin").where("phoneNumber", "==", phoneNumber).get();
-    return !adminSnapshot.empty;
+    if(!adminSnapshot.empty) {
+      return {
+        name: adminSnapshot.docs[0].data().name,
+        isAdmin: true
+      }
+    }
+    console.log(`No super admin found for phone number: ${phoneNumber}`);
+    return {
+        name: null,
+        isAdmin: false
+    }
   } catch (err) {
     console.error("Error checking super admin status:", err);
     return false;
@@ -718,13 +727,13 @@ Sessions: [New number of remaining sessions]`;
 
     case 'remove_trainee':
       if (message.startsWith('Phone:')) {
-        const phoneNumber = formatPhoneNumber(message.split('Phone:')[1].trim());
+        const traineePhoneNumber = formatPhoneNumber(message.split('Phone:')[1].trim());
         const traineeSnapshot = await db.collection("trainees")
-          .where("phoneNumber", "==", phoneNumber)
+          .where("phoneNumber", "==", traineePhoneNumber)
           .get();
 
         if (traineeSnapshot.empty) {
-          response = `❌ No trainee found with phone number ${phoneNumber}. Please try again.`;
+          response = `❌ No trainee found with phone number ${traineePhoneNumber}. Please try again.`;
           // Don't reset state on error
         } else {
           const traineeData = traineeSnapshot.docs[0].data();
@@ -735,8 +744,7 @@ Sessions: [New number of remaining sessions]`;
           });
           await traineeSnapshot.docs[0].ref.delete();
           response = `✅ Trainee ${traineeData.name} has been removed and archived.`;
-          adminStates.set(phoneNumber, 'initial');
-          logStateChange(phoneNumber, oldState, 'initial', 'Trainee removed successfully');
+          setAdminState(phoneNumber, 'initial', 'Trainee removed successfully');
         }
       } else {
         response = `❌ Invalid format. Please enter the phone number in this format:\n
@@ -773,7 +781,7 @@ Phone: [WhatsApp number with country code]`;
 
   console.log(`[Response] Sending to ${phoneNumber}:
     State: ${adminStates.get(phoneNumber)}
-    Response Length: ${response.length}
+    Response: ${response}
     Timestamp: ${new Date().toISOString()}
   `);
 
@@ -1039,10 +1047,10 @@ async function handleHiCommand(phoneNumber, res) {
   console.log("Received 'Hi' message from:", phoneNumber, "checking admin status...");
   
   // Check if the user is a super admin
-  const isAdmin = await isSuperAdmin(phoneNumber);
+  const adminDetails = await getSuperAdminDetails(phoneNumber);
   console.log("Admin check result:", {
     phoneNumber: phoneNumber,
-    isAdmin: isAdmin
+    isAdmin: adminDetails.isAdmin
   });
   
   // Always reset admin state and temp data when receiving "Hi"
@@ -1052,12 +1060,12 @@ async function handleHiCommand(phoneNumber, res) {
     adminTempData.delete(phoneNumber);
   }
   
-  if (isAdmin) {
+  if (adminDetails.isAdmin) {
     // Handle admin "Hi"
     console.log("User is admin, sending admin options...");
     const response = `<?xml version="1.0" encoding="UTF-8"?>
       <Response>
-        <Message>👋 Hello Admin!\n\n${generateAdminOptions()}</Message>
+        <Message>👋 Hello ${adminDetails.name}!\n\n${generateAdminOptions()}</Message>
       </Response>`;
     res.set("Content-Type", "text/xml");
     res.send(response);
@@ -1462,9 +1470,9 @@ app.post("/webhook", async (req, res) => {
     }
     
     // CASE 3: Check if user is admin
-    const isAdmin = await isSuperAdmin(formattedFrom);
+    const adminDetails = await getSuperAdminDetails(formattedFrom);
     
-    if (isAdmin) {
+    if (adminDetails.isAdmin) {
       // Handle admin messages
       if (adminStates.has(formattedFrom)) {
         await handleAdminInConversation(formattedFrom, Body, res);
