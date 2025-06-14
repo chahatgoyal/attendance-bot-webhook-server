@@ -98,7 +98,7 @@ async function isDuplicateAttendanceRequest(phoneNumber, date) {
   return !existingRequest.empty;
 }
 
-// Modify the sendWelcomeMessage function to remove TTL references
+// Modify the sendWelcomeMessage function to use join command
 async function sendWelcomeMessage(phoneNumber, traineeName) {
   if (!twilioClient) {
     console.error("Twilio client not initialized");
@@ -122,7 +122,7 @@ async function sendWelcomeMessage(phoneNumber, traineeName) {
         : process.env.TWILIO_SANDBOX_CODE;
       
       const firstMessage = await twilioClient.messages.create({
-        body: `Welcome ${traineeName} to our Badminton Training Program! 🏸\n\nTo join our WhatsApp service, click this link:\n${joinLink}\n\nOr send "join ${sandboxCode}" to this number.`,
+        body: `Welcome ${traineeName} to our Badminton Training Program! 🏸\n\nTo join our WhatsApp service:\n1. Click this link: ${joinLink}\n2. When WhatsApp opens, click "Send" to join\n3. Wait for our welcome message\n\nOr send "join ${sandboxCode}" to this number.`,
         from: `whatsapp:${process.env.TWILIO_FROM_WHATSAPP}`,
         to: `whatsapp:${phoneNumber}`
       });
@@ -170,7 +170,9 @@ function generateJoinLink(phoneNumber) {
     ? process.env.TWILIO_TEST_SANDBOX_CODE 
     : process.env.TWILIO_SANDBOX_CODE;
   const whatsappNumber = process.env.TWILIO_FROM_WHATSAPP;
-  return `https://wa.me/${whatsappNumber}?text=join%20${sandboxCode}`;
+  // URL encode the join message to ensure it works in the link
+  const joinMessage = encodeURIComponent(`join ${sandboxCode}`);
+  return `https://wa.me/${whatsappNumber}?text=${joinMessage}`;
 }
 
 async function getSuperAdminDetails(phoneNumber) {
@@ -374,10 +376,15 @@ Phone: [WhatsApp number with country code]`;
       } else if (message === '5') {
         console.log(`[Operation] Fetching active trainees for ${phoneNumber}`);
         const data = await getActiveTrainees(1);
-        adminTempData.set(phoneNumber, { page: 1 });
-        response = formatTraineesList(data);
-        adminStates.set(phoneNumber, 'list_active_trainees');
-        logStateChange(phoneNumber, oldState, 'list_active_trainees', message);
+        if (data.trainees.length === 0) {
+          adminStates.set(phoneNumber, 'initial');
+          response = "No active trainees found. Send 'Hi' to see options.";
+        } else {
+          adminTempData.set(phoneNumber, { page: 1 });
+          response = formatTraineesList(data);
+          adminStates.set(phoneNumber, 'list_active_trainees');
+        }
+        logStateChange(phoneNumber, oldState, adminStates.get(phoneNumber), message);
       } else if (message === '6') {
         try {
           console.log(`[Operation] Generating CSV for ${phoneNumber}`);
@@ -810,7 +817,7 @@ async function getCompletedTrainees() {
   }
 }
 
-// Modify the handleSandboxJoin function to remove TTL check
+// Modify the handleSandboxJoin function to handle only join commands
 async function handleSandboxJoin(phoneNumber, message, res) {
   console.log("handleSandboxJoin called with:", {
     phoneNumber,
@@ -827,15 +834,24 @@ async function handleSandboxJoin(phoneNumber, message, res) {
     : process.env.TWILIO_SANDBOX_CODE;
   
   // More lenient join command verification
-  const joinMatch = message.toLowerCase().match(/join\s*(\w+)/);
+  const joinMatch = message.toLowerCase().trim().match(/^join\s+(.+)$/);
   console.log("Join command match result:", {
+    originalMessage: message,
+    cleanedMessage: message.toLowerCase().trim(),
     match: joinMatch,
     expectedCode: sandboxCode,
-    receivedCode: joinMatch ? joinMatch[1] : null
+    receivedCode: joinMatch ? joinMatch[1].trim() : null,
+    isMatch: joinMatch && joinMatch[1].trim() === sandboxCode
   });
 
-  if (!joinMatch || joinMatch[1] !== sandboxCode) {
-    console.log(`Invalid join command format or sandbox code for ${phoneNumber}`);
+  if (!joinMatch || joinMatch[1].trim() !== sandboxCode) {
+    console.log(`Invalid join command format or sandbox code for ${phoneNumber}:`, {
+      receivedMessage: message,
+      expectedFormat: `join ${sandboxCode}`,
+      match: joinMatch,
+      receivedCode: joinMatch ? joinMatch[1].trim() : null,
+      expectedCode: sandboxCode
+    });
     const response = `<?xml version="1.0" encoding="UTF-8"?>
       <Response>
         <Message>Invalid join command. Please use the exact link provided or send "join ${sandboxCode}".</Message>
@@ -855,7 +871,8 @@ async function handleSandboxJoin(phoneNumber, message, res) {
   console.log("Pending trainee check result:", {
     found: !pendingTrainee.empty,
     count: pendingTrainee.size,
-    phoneNumber
+    phoneNumber,
+    pendingTraineeData: !pendingTrainee.empty ? pendingTrainee.docs[0].data() : null
   });
 
   if (!pendingTrainee.empty) {
@@ -1435,7 +1452,7 @@ app.get('/download-csv', async (req, res) => {
   }
 });
 
-// Modify the webhook handler to properly handle admin messages
+// Update the webhook handler to remove verify command
 app.post("/webhook", async (req, res) => {
   const { From, Body } = req.body;
   const formattedFrom = formatPhoneNumber(From);
@@ -1458,7 +1475,7 @@ app.post("/webhook", async (req, res) => {
       return;
     }
     
-    // CASE 2: Handle sandbox join command
+    // CASE 2: Handle join command
     if (Body.toLowerCase().startsWith('join')) {
       console.log("Processing join command:", {
         phoneNumber: formattedFrom,
