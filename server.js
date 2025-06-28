@@ -173,6 +173,24 @@ function generateJoinLink(phoneNumber) {
   return `https://wa.me/${whatsappNumber}?text=join%20${sandboxCode}`;
 }
 
+function sendWelcomeMessageToOnboardedTrainee(phoneNumber, traineeName) {
+  twilioClient.messages.create({
+    from: 'whatsapp:+15416314470',
+    to: `whatsapp:${phoneNumber}`,
+    contentSid: 'HX354a87b8fdffb2f8ed215cdfd3b4a77a',
+    contentVariables: JSON.stringify({
+      '1': traineeName,
+    }),
+  })
+  .then(message => {
+    console.log(`Welcome message sent to ${phoneNumber}:`, message.sid);
+  })
+  .catch(err => {
+    console.error(`Failed to send welcome message to ${phoneNumber}:`, err);
+  });
+}
+
+
 async function getSuperAdminDetails(phoneNumber) {
   try {
     const adminSnapshot = await db.collection("superAdmin").where("phoneNumber", "==", phoneNumber).get();
@@ -568,7 +586,7 @@ Try again...`;
         }
 
         // Only reset state after successful completion
-        const joinLink = generateJoinLink(traineePhone);
+        sendWelcomeMessageToOnboardedTrainee(traineePhone, traineeName);
         await db.collection("pendingTrainees").add({
           name: traineeName,
           phoneNumber: traineePhone,
@@ -579,23 +597,17 @@ Try again...`;
           sandboxCode: process.env.NODE_ENV === 'development' 
             ? process.env.TWILIO_TEST_SANDBOX_CODE 
             : process.env.TWILIO_SANDBOX_CODE,
-          joinLink: joinLink,
+          joinLink: "joinLink", // Placeholder, will be updated later
           environment: process.env.NODE_ENV
         });
 
-        response = `✅ Success! Trainee details received!\n
-📱 Share this join link with ${traineeName}:
-${joinLink}\n
-⚠️ Important:
-- Trainee must click this link to join
-- They will be automatically added once they join
-- Their ${sessions} sessions will be activated after joining`;
+        response = `✅ Success! Trainee details received and welcome message sent!`
         adminStates.set(phoneNumber, 'initial');
         logStateChange(phoneNumber, oldState, 'initial', 'Trainee onboarded successfully');
       } catch (err) {
         console.error("[Error] Onboarding:", err);
         response = `❌ Error processing trainee details. Please try again.\n
-Make sure to follow the exact format shown above.`;
+        Make sure to follow the exact format shown above.`;
         // Don't reset state on error
       }
       break;
@@ -1087,6 +1099,7 @@ async function handleTraineeOptions(phoneNumber, res) {
     
     if (traineeSnapshot.empty) {
       // Not found or not active
+      console.log(`No active trainee found for ${phoneNumber}, sending welcome message`);
       const response = `<?xml version="1.0" encoding="UTF-8"?>
         <Response>
           <Message>Welcome to Badminton Training! Are you attending training tomorrow?\n\n1. Yes\n2. No</Message>
@@ -1102,6 +1115,7 @@ async function handleTraineeOptions(phoneNumber, res) {
       <Response>
         <Message>Hello ${traineeData.name}!\n\nYou have ${traineeData.remainingSessions} sessions remaining.\n\nBadminton Training Options:\n1. Check remaining sessions\n2. Update your profile\n\nOr simply wait for the daily attendance check.</Message>
       </Response>`;
+    console.log(`Sending trainee options to ${phoneNumber} : ${traineeData.name}`);
     res.set("Content-Type", "text/xml");
     res.send(response);
     
