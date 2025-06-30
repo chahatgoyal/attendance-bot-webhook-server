@@ -4,3 +4,4 @@ node_modules/src/**/*.js
 node_modules
 dist/
 dist/
+logs/
