@@ -6,13 +6,9 @@ export interface AdminState {
 export interface Trainee {
   name: string;
   phoneNumber: string;
-  status: 'pending_join' | 'active' | 'completed';
+  remainingSessions: number;
+  status: string;
   createdAt: Date;
-  sandboxCode?: string;
-  joinLink?: string;
-  environment?: string;
-  sessions?: number;
-  membershipEndDate?: Date;
 }
 
 export interface AdminTempData {
@@ -23,12 +19,12 @@ export interface AdminTempData {
   pageSize?: number;
   totalPages?: number;
   hasMore?: boolean;
+  action?: string;
 }
 
 export interface TwilioMessage {
-  sid: string;
-  status: string;
-  to: string;
+  From: string;
+  Body: string;
 }
 
 export interface AdminOptions {

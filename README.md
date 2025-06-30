@@ -27,16 +27,15 @@ A WhatsApp-based chatbot system for managing badminton training sessions, traine
 - ngrok (for development)
 
 ## Environment Variables
-```env
-TWILIO_ACCOUNT_SID=your_account_sid
-TWILIO_AUTH_TOKEN=your_auth_token
-TWILIO_FROM_WHATSAPP=your_whatsapp_number
-TWILIO_SANDBOX_CODE=your_sandbox_code
-TWILIO_TEST_ACCOUNT_SID=your_test_account_sid
-TWILIO_TEST_AUTH_TOKEN=your_test_auth_token
-TWILIO_TEST_SANDBOX_CODE=your_test_sandbox_code
-NODE_ENV=development/production
-```
+
+- TWILIO_ACCOUNT_SID=your_account_sid
+- TWILIO_AUTH_TOKEN=your_auth_token
+- TWILIO_FROM_WHATSAPP=your_production_whatsapp_number
+- FIREBASE_PROJECT_ID=your_project_id
+- FIREBASE_CLIENT_EMAIL=your_firebase_client_email
+- FIREBASE_PRIVATE_KEY=your_firebase_private_key
+
+No sandbox variables are required for production use.
 
 ## Setup Instructions
 

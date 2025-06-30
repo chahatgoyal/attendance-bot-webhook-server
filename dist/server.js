@@ -7,8 +7,9 @@ import { twilioClient } from "./config/twilio.config.js";
 import { formatPhoneNumber } from "./utils/phoneUtils.js";
 import { getNextBusinessDay, formatDate } from "./utils/dateUtils.js";
 import { setAdminState, getAdminState, clearAdminTempData } from "./services/StateService.js";
-import { getSuperAdminDetails, generateAdminOptions, handleAdminResponse } from "./services/AdminService.js";
-import { isDuplicatePendingTrainee, isDuplicateTrainee } from "./services/TraineeService.js";
+import { getSuperAdminDetails, handleAdminResponse } from "./services/AdminService.js";
+import { InteractiveMessageService } from "./services/InteractiveMessageService.js";
+import { TemplateService } from "./services/TemplateService.js";
 dotenv.config();
 // Initialize Firebase Admin
 const app = initializeApp({
@@ -25,8 +26,6 @@ console.log("Environment variables check:");
 console.log("TWILIO_ACCOUNT_SID:", process.env.TWILIO_ACCOUNT_SID ? "Set" : "Not set");
 console.log("TWILIO_AUTH_TOKEN:", process.env.TWILIO_AUTH_TOKEN ? "Set" : "Not set");
 console.log("TWILIO_FROM_WHATSAPP:", process.env.TWILIO_FROM_WHATSAPP ? "Set" : "Not set");
-console.log("TWILIO_SANDBOX_CODE:", process.env.TWILIO_SANDBOX_CODE ? "Set" : "Not set");
-console.log("TWILIO_TEST_SANDBOX_CODE:", process.env.TWILIO_TEST_SANDBOX_CODE ? "Set" : "Not set");
 const expressApp = express();
 expressApp.use(bodyParser.urlencoded({ extended: false }));
 expressApp.use(bodyParser.json());
@@ -37,6 +36,53 @@ expressApp.get("/health", (req, res) => {
         timestamp: new Date().toISOString(),
         environment: process.env.NODE_ENV
     });
+});
+// Test Firestore connection and list super admins
+expressApp.get("/test-firestore", async (req, res) => {
+    try {
+        console.log("Testing Firestore connection...");
+        // Test basic connection
+        const testRef = db.collection("test");
+        await testRef.add({
+            test: true,
+            timestamp: new Date()
+        });
+        console.log("✅ Firestore write test successful");
+        // List all super admins with detailed info
+        const adminRef = db.collection("superAdmin");
+        console.log("🔍 Querying superAdmin collection...");
+        const adminSnapshot = await adminRef.get();
+        console.log(`📊 Found ${adminSnapshot.size} documents in superAdmin collection`);
+        const admins = [];
+        adminSnapshot.forEach(doc => {
+            const data = doc.data();
+            console.log(`📄 Document ${doc.id}:`, data);
+            admins.push({
+                id: doc.id,
+                ...data
+            });
+        });
+        console.log("✅ Super admins found:", admins);
+        // Clean up test document
+        const testDocs = await testRef.get();
+        testDocs.forEach(doc => doc.ref.delete());
+        res.status(200).json({
+            success: true,
+            message: "Firestore connection successful",
+            superAdmins: admins,
+            adminCount: admins.length,
+            totalDocuments: adminSnapshot.size,
+            collectionName: "superAdmin"
+        });
+    }
+    catch (error) {
+        console.error("❌ Firestore test failed:", error);
+        res.status(500).json({
+            success: false,
+            error: error instanceof Error ? error.message : 'Unknown error',
+            stack: error instanceof Error ? error.stack : undefined
+        });
+    }
 });
 // Helper endpoint to list Twilio phone numbers
 expressApp.get("/list-phone-numbers", async (req, res) => {
@@ -159,11 +205,11 @@ async function handleHiCommand(phoneNumber, db) {
     setAdminState(phoneNumber, adminDetails);
     clearAdminTempData(phoneNumber);
     if (adminDetails.isAdmin) {
-        await twilioClient.messages.create({
-            body: `Welcome ${adminDetails.name || 'Admin'}! ${generateAdminOptions()}`,
-            from: `whatsapp:${process.env.TWILIO_FROM_WHATSAPP}`,
-            to: `whatsapp:${phoneNumber}`
-        });
+        // Send the approved admin panel template using the HTTP API
+        await TemplateService.sendAdminPanelTemplate(phoneNumber, adminDetails.name ?? "Coach");
+        // Optionally, you can still send the interactive menu after the template if you want
+        // const interactiveService = new InteractiveMessageService(db);
+        // await interactiveService.sendAdminMenu(phoneNumber, adminDetails.name ?? undefined);
     }
     else {
         await handleTraineeOptions(phoneNumber, db);
@@ -174,32 +220,34 @@ async function handleTraineeOptions(phoneNumber, db) {
         const traineeRef = db.collection("trainees");
         const querySnapshot = await traineeRef.where("phoneNumber", "==", phoneNumber).get();
         if (querySnapshot.empty) {
-            await twilioClient.messages.create({
-                body: "Welcome! You are not registered as a trainee. Please contact an admin to get started.",
-                from: `whatsapp:${process.env.TWILIO_FROM_WHATSAPP}`,
-                to: `whatsapp:${phoneNumber}`
-            });
+            // Send welcome template for unregistered users
+            await TemplateService.sendWelcomeTemplate(phoneNumber, "there");
             return;
         }
         const traineeDoc = querySnapshot.docs[0];
         const traineeData = traineeDoc.data();
         const remainingSessions = traineeData.remainingSessions || 0;
-        let message = `Welcome ${traineeData.name}! `;
         if (traineeData.status === "active") {
-            message += `You have ${remainingSessions} sessions remaining. `;
-            message += "Please respond with 'Yes' to confirm your attendance for tomorrow's session.";
+            // Send welcome template first
+            await TemplateService.sendWelcomeTemplate(phoneNumber, traineeData.name);
+            // Then send interactive menu
+            const interactiveService = new InteractiveMessageService(db);
+            await interactiveService.sendAttendanceConfirmation(phoneNumber, traineeData.name, remainingSessions);
         }
         else if (traineeData.status === "pending") {
-            message += "Your account is pending activation. Please wait for an admin to activate your account.";
+            await twilioClient.messages.create({
+                body: `Welcome ${traineeData.name}! Your account is pending activation. Please wait for an admin to activate your account.`,
+                from: `whatsapp:${process.env.TWILIO_FROM_WHATSAPP}`,
+                to: `whatsapp:${phoneNumber}`
+            });
         }
         else {
-            message += "Your account is inactive. Please contact an admin for assistance.";
+            await twilioClient.messages.create({
+                body: `Welcome ${traineeData.name}! Your account is inactive. Please contact an admin for assistance.`,
+                from: `whatsapp:${process.env.TWILIO_FROM_WHATSAPP}`,
+                to: `whatsapp:${phoneNumber}`
+            });
         }
-        await twilioClient.messages.create({
-            body: message,
-            from: `whatsapp:${process.env.TWILIO_FROM_WHATSAPP}`,
-            to: `whatsapp:${phoneNumber}`
-        });
     }
     catch (error) {
         console.error("Error handling trainee options:", error);
@@ -214,6 +262,23 @@ async function handleAttendanceResponse(phoneNumber, message, db) {
     try {
         const tomorrow = new Date(getNextBusinessDay());
         const tomorrowStr = tomorrow.toISOString().split('T')[0];
+        // Handle interactive button responses
+        if (message === 'confirm_yes' || message.toLowerCase() === 'yes') {
+            await processAttendanceConfirmation(phoneNumber, tomorrowStr, db, true);
+            return;
+        }
+        if (message === 'confirm_no' || message.toLowerCase() === 'no') {
+            await processAttendanceConfirmation(phoneNumber, tomorrowStr, db, false);
+            return;
+        }
+        if (message === 'cancel') {
+            await twilioClient.messages.create({
+                body: "Attendance confirmation cancelled. Type 'Hi' to start again.",
+                from: `whatsapp:${process.env.TWILIO_FROM_WHATSAPP}`,
+                to: `whatsapp:${phoneNumber}`
+            });
+            return;
+        }
         // Check for pending attendance request
         const attendanceRequestsRef = db.collection("attendanceRequests");
         const querySnapshot = await attendanceRequestsRef
@@ -293,44 +358,82 @@ async function handleAttendanceResponse(phoneNumber, message, db) {
         });
     }
 }
-async function handleSandboxJoin(phoneNumber, db) {
+async function processAttendanceConfirmation(phoneNumber, date, db, confirmed) {
     try {
-        // Check for pending trainee
-        const isPending = await isDuplicatePendingTrainee(phoneNumber, db);
-        if (isPending) {
+        // Check for pending attendance request
+        const attendanceRequestsRef = db.collection("attendanceRequests");
+        const querySnapshot = await attendanceRequestsRef
+            .where("phoneNumber", "==", phoneNumber)
+            .where("date", "==", date)
+            .where("status", "==", "pending")
+            .get();
+        if (querySnapshot.empty) {
             await twilioClient.messages.create({
-                body: "You are already registered as a pending trainee. Please wait for an admin to activate your account.",
+                body: "No pending attendance request found for tomorrow.",
                 from: `whatsapp:${process.env.TWILIO_FROM_WHATSAPP}`,
                 to: `whatsapp:${phoneNumber}`
             });
             return;
         }
-        // Check for existing trainee
-        const isExisting = await isDuplicateTrainee(phoneNumber, db);
-        if (isExisting) {
+        const requestDoc = querySnapshot.docs[0];
+        const requestData = requestDoc.data();
+        // Check for duplicate attendance
+        const isDuplicate = await isDuplicateAttendance(phoneNumber, date, db);
+        if (isDuplicate) {
             await twilioClient.messages.create({
-                body: "You are already registered as a trainee. Type 'Hi' to see your options.",
+                body: "You have already confirmed your attendance for tomorrow.",
                 from: `whatsapp:${process.env.TWILIO_FROM_WHATSAPP}`,
                 to: `whatsapp:${phoneNumber}`
             });
             return;
         }
-        // Add to pending trainees
-        await db.collection("pendingTrainees").add({
-            phoneNumber,
-            createdAt: new Date(),
-            status: "pending"
+        // Update attendance request
+        await requestDoc.ref.update({
+            status: confirmed ? "confirmed" : "declined",
+            responseTime: new Date()
         });
-        await twilioClient.messages.create({
-            body: "Thank you for joining! Your account is pending activation. An admin will activate your account soon.",
-            from: `whatsapp:${process.env.TWILIO_FROM_WHATSAPP}`,
-            to: `whatsapp:${phoneNumber}`
-        });
+        if (confirmed) {
+            // Update trainee's remaining sessions
+            const traineeRef = db.collection("trainees").doc(requestData.traineeId);
+            const traineeDoc = await traineeRef.get();
+            const traineeData = traineeDoc.data();
+            if (traineeData && traineeData.remainingSessions > 0) {
+                await traineeRef.update({
+                    remainingSessions: traineeData.remainingSessions - 1
+                });
+                // Add to attendance collection
+                await db.collection("attendance").add({
+                    traineeId: requestData.traineeId,
+                    phoneNumber,
+                    date: date,
+                    createdAt: new Date()
+                });
+                await twilioClient.messages.create({
+                    body: "✅ Thank you for confirming your attendance! Your remaining sessions have been updated.",
+                    from: `whatsapp:${process.env.TWILIO_FROM_WHATSAPP}`,
+                    to: `whatsapp:${phoneNumber}`
+                });
+            }
+            else {
+                await twilioClient.messages.create({
+                    body: "❌ Sorry, you have no remaining sessions. Please contact an admin to purchase more sessions.",
+                    from: `whatsapp:${process.env.TWILIO_FROM_WHATSAPP}`,
+                    to: `whatsapp:${phoneNumber}`
+                });
+            }
+        }
+        else {
+            await twilioClient.messages.create({
+                body: "👋 Thank you for your response. We'll see you next time!",
+                from: `whatsapp:${process.env.TWILIO_FROM_WHATSAPP}`,
+                to: `whatsapp:${phoneNumber}`
+            });
+        }
     }
     catch (error) {
-        console.error("Error handling sandbox join:", error);
+        console.error("Error processing attendance confirmation:", error);
         await twilioClient.messages.create({
-            body: "Sorry, there was an error processing your join request. Please try again later.",
+            body: "Sorry, there was an error processing your attendance. Please try again later.",
             from: `whatsapp:${process.env.TWILIO_FROM_WHATSAPP}`,
             to: `whatsapp:${phoneNumber}`
         });
@@ -338,23 +441,25 @@ async function handleSandboxJoin(phoneNumber, db) {
 }
 // Webhook handler
 expressApp.post("/webhook", async (req, res) => {
-    const { From, Body } = req.body;
+    const { From, Body, ButtonText, ButtonPayload } = req.body;
     const formattedFrom = formatPhoneNumber(From);
-    console.log(`Received message from ${formattedFrom}: ${Body}`);
+    // Handle interactive button responses
+    const message = ButtonPayload || Body;
+    console.log(`Received message from ${formattedFrom}: ${message}`);
+    if (ButtonText) {
+        console.log(`Button clicked: ${ButtonText}`);
+    }
     try {
-        if (Body.toLowerCase() === "hi") {
+        if (message.toLowerCase() === "hi") {
             await handleHiCommand(formattedFrom, db);
-        }
-        else if (Body.toLowerCase() === "join") {
-            await handleSandboxJoin(formattedFrom, db);
         }
         else {
             const adminState = getAdminState(formattedFrom);
             if (adminState?.isAdmin) {
-                await handleAdminResponse(formattedFrom, Body, db);
+                await handleAdminResponse(formattedFrom, message, db);
             }
             else {
-                await handleAttendanceResponse(formattedFrom, Body, db);
+                await handleAttendanceResponse(formattedFrom, message, db);
             }
         }
         res.status(200).send("OK");
