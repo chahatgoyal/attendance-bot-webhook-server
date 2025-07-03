@@ -2,14 +2,32 @@
     "name": "twilio-webhook",
     "version": "1.0.0",
     "type": "module",
-    "main": "server.js",
+    "main": "dist/server.js",
     "scripts": {
-      "start": "node server.js"
+        "build": "tsc",
+        "start": "node dist/server.js",
+        "dev": "tsc -w & node dist/server.js",
+        "clean": "rm -rf dist",
+        "pm2:start": "npm run clean && npm run build && pm2 start ecosystem.config.cjs",
+        "pm2:stop": "pm2 stop ecosystem.config.cjs",
+        "pm2:restart": "npm run clean && npm run build && pm2 restart ecosystem.config.cjs",
+        "pm2:logs": "pm2 logs",
+        "pm2:status": "pm2 status",
+        "pm2:delete": "pm2 delete ecosystem.config.cjs"
     },
     "dependencies": {
-      "dotenv": "^16.0.3",
-      "express": "^4.18.2",
-      "body-parser": "^1.20.2"
+        "axios": "^1.10.0",
+        "body-parser": "^1.20.2",
+        "dotenv": "^16.0.3",
+        "express": "^4.18.2",
+        "firebase-admin": "^13.3.0",
+        "pm2": "^5.3.1",
+        "twilio": "^5.7.1"
+    },
+    "devDependencies": {
+        "@types/express": "^5.0.3",
+        "@types/node": "^24.0.1",
+        "@types/twilio": "^3.19.2",
+        "typescript": "^5.8.3"
     }
-  }
-  
+}
