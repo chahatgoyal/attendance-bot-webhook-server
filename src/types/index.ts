@@ -15,6 +15,7 @@ export interface AdminTempData {
   traineeName?: string;
   traineePhone?: string;
   sessions?: number;
+  months?: number;
   page?: number;
   pageSize?: number;
   totalPages?: number;

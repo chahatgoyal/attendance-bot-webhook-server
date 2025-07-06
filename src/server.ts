@@ -24,7 +24,6 @@ import {
   isDuplicateTrainee, 
   sendWelcomeMessage 
 } from "./services/TraineeService.js";
-import { InteractiveMessageService } from "./services/InteractiveMessageService.js";
 import { TemplateService } from "./services/TemplateService.js";
 import { AdminState, AdminTempData, Trainee, TwilioMessage } from "./types/index.js";
 
@@ -51,6 +50,9 @@ console.log("TWILIO_FROM_WHATSAPP:", process.env.TWILIO_FROM_WHATSAPP ? "Set" : 
 const expressApp = express();
 expressApp.use(bodyParser.urlencoded({ extended: false }));
 expressApp.use(bodyParser.json());
+
+// Serve static files from the 'exports' directory
+expressApp.use('/exports', express.static('exports'));
 
 // Health check endpoint
 expressApp.get("/health", (req: Request, res: Response) => {
@@ -294,8 +296,7 @@ async function handleTraineeOptions(phoneNumber: string, db: Firestore): Promise
       await TemplateService.sendWelcomeTemplate(phoneNumber, traineeData.name);
       
       // Then send interactive menu
-      const interactiveService = new InteractiveMessageService(db);
-      await interactiveService.sendAttendanceConfirmation(phoneNumber, traineeData.name, remainingSessions);
+      await handleAttendanceResponse(phoneNumber, remainingSessions, db);
     } else if (traineeData.status === "pending") {
       await twilioClient.messages.create({
         body: `Welcome ${traineeData.name}! Your account is pending activation. Please wait for an admin to activate your account.`,
