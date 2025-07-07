@@ -117,4 +117,47 @@ export class TemplateService {
       throw error;
     }
   }
+
+  /**
+   * Send the help menu to the admin
+   */
+  static async sendHelpMenu(phoneNumber: string): Promise<void> {
+    try {
+      await twilioClient.messages.create({
+        body: `❓ Help - Available Commands:\n\n1. Add Trainee: Add new trainees to the system\n2. List Trainees: View all trainees\n3. Active Trainees: View active trainees only\n4. Help: Show this help message\n5. Exit: Exit admin mode\n\nSend 'Hi' to return to main menu`,
+        from: `whatsapp:${process.env.TWILIO_FROM_WHATSAPP}`,
+        to: `whatsapp:${phoneNumber}`
+      });
+    } catch (error) {
+      console.error('Error sending help menu:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Send the trainee list to the admin
+   */
+  static async sendTraineeList(phoneNumber: string, trainees: any[], page: number = 1, hasMore: boolean = false): Promise<void> {
+    if (trainees.length === 0) {
+      await twilioClient.messages.create({
+        body: "No trainees found.",
+        from: `whatsapp:${process.env.TWILIO_FROM_WHATSAPP}`,
+        to: `whatsapp:${phoneNumber}`
+      });
+      return;
+    }
+
+    let body = `📋 Trainees (Page ${page}):\n\n`;
+    trainees.forEach((trainee, index) => {
+      body += `${index + 1}. ${trainee.name} (${trainee.remainingSessions || 0} sessions)\n`;
+    });
+    if (hasMore) body += '\nSend "next" for more';
+    body += '\nSend "back" to return to menu';
+
+    await twilioClient.messages.create({
+      body,
+      from: `whatsapp:${process.env.TWILIO_FROM_WHATSAPP}`,
+      to: `whatsapp:${phoneNumber}`
+    });
+  }
 } 

@@ -9,7 +9,9 @@ import {
   getAdminTempData, 
   clearAdminTempData 
 } from "./StateService.js";
-import { InteractiveMessageService } from "./InteractiveMessageService.js";
+import { TemplateService } from "./TemplateService.js";
+import fs from 'fs';
+import path from 'path';
 
 export async function getSuperAdminDetails(phoneNumber: string, db: Firestore): Promise<AdminState> {
   const adminRef = db.collection("superAdmin");
@@ -55,7 +57,6 @@ export async function handleAdminResponse(
 ): Promise<void> {
   const adminState = getAdminState(phoneNumber);
   const adminTempData = getAdminTempData(phoneNumber);
-  const interactiveService = new InteractiveMessageService(db);
 
   if (!adminState) {
     console.log(`No admin state found for ${phoneNumber}`);
@@ -75,7 +76,43 @@ export async function handleAdminResponse(
       return;
     } else if (!adminTempData.traineePhone) {
       // Second step: get phone
-      setAdminTempData(phoneNumber, { ...adminTempData, traineePhone: message.trim() });
+      const phoneInputRaw = message.trim();
+      const phoneInput = phoneInputRaw.replace(/\s+/g, '');
+      const phoneRegex = /^\+[1-9]\d{9,14}$/;
+      if (!phoneRegex.test(phoneInput)) {
+        await twilioClient.messages.create({
+          body: "❌ Invalid phone number format. Please enter a valid WhatsApp number with country code (e.g. +1234567890):",
+          from: `whatsapp:${process.env.TWILIO_FROM_WHATSAPP}`,
+          to: `whatsapp:${phoneNumber}`
+        });
+        return;
+      }
+      // Check for existing active trainee with this number
+      const existing = await db.collection('trainees')
+        .where('phoneNumber', '==', phoneInput)
+        .where('status', '==', 'active')
+        .get();
+      if (!existing.empty) {
+        await twilioClient.messages.create({
+          body: "❌ A trainee with this phone number is already active in the system. Please enter a different number:",
+          from: `whatsapp:${process.env.TWILIO_FROM_WHATSAPP}`,
+          to: `whatsapp:${phoneNumber}`
+        });
+        return;
+      }
+      // Check if this phone number belongs to an admin
+      const adminSnapshot = await db.collection('superAdmin')
+        .where('phoneNumber', '==', phoneInput)
+        .get();
+      if (!adminSnapshot.empty) {
+        await twilioClient.messages.create({
+          body: "❌ This phone number belongs to an admin and cannot be onboarded as a trainee. Please enter a different number:",
+          from: `whatsapp:${process.env.TWILIO_FROM_WHATSAPP}`,
+          to: `whatsapp:${phoneNumber}`
+        });
+        return;
+      }
+      setAdminTempData(phoneNumber, { ...adminTempData, traineePhone: phoneInput });
       await twilioClient.messages.create({
         body: "🔢 Please enter the number of sessions (1-50):",
         from: `whatsapp:${process.env.TWILIO_FROM_WHATSAPP}`,
@@ -93,25 +130,44 @@ export async function handleAdminResponse(
         });
         return;
       }
+      setAdminTempData(phoneNumber, { ...adminTempData, sessions });
+      await twilioClient.messages.create({
+        body: "📅 Please enter the number of months (1-24):",
+        from: `whatsapp:${process.env.TWILIO_FROM_WHATSAPP}`,
+        to: `whatsapp:${phoneNumber}`
+      });
+      return;
+    } else if (!adminTempData.months) {
+      // Fourth step: get months
+      const months = parseInt(message.trim(), 10);
+      if (isNaN(months) || months < 1 || months > 24) {
+        await twilioClient.messages.create({
+          body: "❌ Invalid number of months. Please enter a number between 1 and 24:",
+          from: `whatsapp:${process.env.TWILIO_FROM_WHATSAPP}`,
+          to: `whatsapp:${phoneNumber}`
+        });
+        return;
+      }
       // All data collected, add trainee
-      const { traineeName, traineePhone } = adminTempData;
+      const { traineeName, traineePhone, sessions } = adminTempData;
       try {
         await db.collection('trainees').add({
           name: traineeName,
           phoneNumber: traineePhone,
           remainingSessions: sessions,
+          months: months,
           status: 'active',
           createdAt: new Date()
         });
         clearAdminTempData(phoneNumber);
         await twilioClient.messages.create({
-          body: `✅ Trainee added successfully!\n\nName: ${traineeName}\nPhone: ${traineePhone}\nSessions: ${sessions}`,
+          body: `✅ Trainee added successfully!\n\nName: ${traineeName}\nPhone: ${traineePhone}\nSessions: ${sessions}\nMonths: ${months}`,
           from: `whatsapp:${process.env.TWILIO_FROM_WHATSAPP}`,
           to: `whatsapp:${phoneNumber}`
         });
         // Optionally, send a welcome message to the trainee
         await twilioClient.messages.create({
-          body: `🎉 Welcome to Birdie Badminton, ${traineeName}! You have been registered with ${sessions} sessions.`,
+          body: `🎉 Welcome to Birdie Badminton, ${traineeName}! You have been registered with ${sessions} sessions for ${months} month(s).`,
           from: `whatsapp:${process.env.TWILIO_FROM_WHATSAPP}`,
           to: `whatsapp:${traineePhone}`
         });
@@ -124,6 +180,80 @@ export async function handleAdminResponse(
       }
       return;
     }
+  }
+
+  // Multi-step flow for Inspect Trainee Sessions
+  if (adminTempData?.action === 'inspect_sessions') {
+    const threshold = parseInt(message.trim(), 10);
+    if (isNaN(threshold) || threshold < 1) {
+      await twilioClient.messages.create({
+        body: "❌ Invalid threshold. Please enter a positive number:",
+        from: `whatsapp:${process.env.TWILIO_FROM_WHATSAPP}`,
+        to: `whatsapp:${phoneNumber}`
+      });
+      return;
+    }
+    // Query trainees with remainingSessions < threshold
+    try {
+      const traineesRef = db.collection("trainees");
+      const querySnapshot = await traineesRef
+        .where("status", "==", "active")
+        .where("remainingSessions", "<", threshold)
+        .get();
+      const trainees = querySnapshot.docs.map((doc, index) => ({
+        id: doc.id,
+        name: doc.data().name,
+        remainingSessions: doc.data().remainingSessions || 0,
+        status: doc.data().status
+      }));
+      clearAdminTempData(phoneNumber);
+      await TemplateService.sendTraineeList(phoneNumber, trainees, 1, false);
+    } catch (error) {
+      await twilioClient.messages.create({
+        body: "Sorry, there was an error fetching trainees. Please try again.",
+        from: `whatsapp:${process.env.TWILIO_FROM_WHATSAPP}`,
+        to: `whatsapp:${phoneNumber}`
+      });
+    }
+    return;
+  }
+
+  // Multi-step flow for Remove Trainee
+  if (adminTempData?.action === 'remove_trainee') {
+    const phoneInputRaw = message.trim();
+    const phoneInput = phoneInputRaw.replace(/\s+/g, '');
+    const phoneRegex = /^\+[1-9]\d{9,14}$/;
+    if (!phoneRegex.test(phoneInput)) {
+      await twilioClient.messages.create({
+        body: "❌ Invalid phone number format. Please enter a valid WhatsApp number with country code (e.g. +1234567890):",
+        from: `whatsapp:${process.env.TWILIO_FROM_WHATSAPP}`,
+        to: `whatsapp:${phoneNumber}`
+      });
+      return;
+    }
+    // Check for active trainee
+    const traineeQuery = await db.collection('trainees')
+      .where('phoneNumber', '==', phoneInput)
+      .where('status', '==', 'active')
+      .get();
+    if (traineeQuery.empty) {
+      await twilioClient.messages.create({
+        body: "❌ No active trainee found with this phone number. Please check the number and try again.",
+        from: `whatsapp:${process.env.TWILIO_FROM_WHATSAPP}`,
+        to: `whatsapp:${phoneNumber}`
+      });
+      return;
+    }
+    // Soft delete: set status to inactive and add deactivationTime
+    const traineeDoc = traineeQuery.docs[0];
+    await traineeDoc.ref.update({ status: 'inactive', deactivationTime: new Date() });
+    clearAdminTempData(phoneNumber);
+    await twilioClient.messages.create({
+      body: `✅ Trainee with phone number ${phoneInput} has been deactivated (soft deleted).`,
+      from: `whatsapp:${process.env.TWILIO_FROM_WHATSAPP}`,
+      to: `whatsapp:${phoneNumber}`
+    });
+    return;
   }
 
   // Normalize message for button text and payloads
@@ -148,7 +278,7 @@ export async function handleAdminResponse(
     normalized === 'list active trainees' ||
     normalized === '2'
   ) {
-    await handleListTrainees(phoneNumber, db, interactiveService);
+    await handleListTrainees(phoneNumber, db);
     return;
   }
   if (
@@ -156,7 +286,12 @@ export async function handleAdminResponse(
     normalized === 'inspect trainees sessions' ||
     normalized === '3'
   ) {
-    await handleActiveTrainees(phoneNumber, db, interactiveService);
+    setAdminTempData(phoneNumber, { action: 'inspect_sessions' });
+    await twilioClient.messages.create({
+      body: "🔍 Please enter the session threshold (e.g., 3 to see trainees with less than 3 sessions):",
+      from: `whatsapp:${process.env.TWILIO_FROM_WHATSAPP}`,
+      to: `whatsapp:${phoneNumber}`
+    });
     return;
   }
   if (
@@ -164,7 +299,12 @@ export async function handleAdminResponse(
     normalized === 'remove trainee' ||
     normalized === '4'
   ) {
-    await handleRemoveTrainee(phoneNumber, db, interactiveService);
+    setAdminTempData(phoneNumber, { action: 'remove_trainee' });
+    await twilioClient.messages.create({
+      body: "🗑️ Remove Trainee\n\nPlease enter the trainee's phone number (with country code, e.g. +1234567890):",
+      from: `whatsapp:${process.env.TWILIO_FROM_WHATSAPP}`,
+      to: `whatsapp:${phoneNumber}`
+    });
     return;
   }
   if (
@@ -172,12 +312,12 @@ export async function handleAdminResponse(
     normalized === 'export trainees info' ||
     normalized === '5'
   ) {
-    await handleGenerateCSV(phoneNumber, db, interactiveService);
+    await handleGenerateCSV(phoneNumber, db);
     return;
   }
   if (normalized === 'help') {
     console.log('Handling help action');
-    await interactiveService.sendHelpMenu(phoneNumber);
+    await TemplateService.sendHelpMenu(phoneNumber);
     return;
   }
   if (normalized === 'exit') {
@@ -191,10 +331,10 @@ export async function handleAdminResponse(
     });
     return;
   }
-  if (normalized === 'back_to_menu') {
+  if (normalized === 'back' || normalized === 'back_to_menu') {
     setAdminState(phoneNumber, { ...adminState, isAdmin: true });
     clearAdminTempData(phoneNumber);
-    await interactiveService.sendAdminMenu(phoneNumber, adminState.name ?? undefined);
+    await TemplateService.sendAdminPanelTemplate(phoneNumber, adminState.name ?? "Coach");
     return;
   }
 
@@ -203,10 +343,10 @@ export async function handleAdminResponse(
     case "menu":
       setAdminState(phoneNumber, { ...adminState, isAdmin: true });
       clearAdminTempData(phoneNumber);
-      await interactiveService.sendAdminMenu(phoneNumber, adminState.name ?? undefined);
+      await TemplateService.sendAdminPanelTemplate(phoneNumber, adminState.name ?? "Coach");
       break;
     case "help":
-      await interactiveService.sendHelpMenu(phoneNumber);
+      await TemplateService.sendHelpMenu(phoneNumber);
       break;
     case "exit":
       setAdminState(phoneNumber, { ...adminState, isAdmin: false });
@@ -231,7 +371,7 @@ export async function handleAdminResponse(
 }
 
 // Handler functions for different admin actions
-async function handleAddTrainee(phoneNumber: string, db: Firestore, interactiveService: InteractiveMessageService): Promise<void> {
+async function handleAddTrainee(phoneNumber: string, db: Firestore): Promise<void> {
   setAdminState(phoneNumber, { name: null, isAdmin: true });
   setAdminTempData(phoneNumber, { action: 'add_trainee' });
   
@@ -242,7 +382,7 @@ async function handleAddTrainee(phoneNumber: string, db: Firestore, interactiveS
   });
 }
 
-async function handleListTrainees(phoneNumber: string, db: Firestore, interactiveService: InteractiveMessageService): Promise<void> {
+async function handleListTrainees(phoneNumber: string, db: Firestore): Promise<void> {
   try {
     const traineesRef = db.collection("trainees");
     const querySnapshot = await traineesRef.orderBy("createdAt", "desc").limit(8).get();
@@ -254,7 +394,7 @@ async function handleListTrainees(phoneNumber: string, db: Firestore, interactiv
       status: doc.data().status
     }));
 
-    await interactiveService.sendTraineeList(phoneNumber, trainees, 1, querySnapshot.docs.length === 8);
+    await TemplateService.sendTraineeList(phoneNumber, trainees, 1, querySnapshot.docs.length === 8);
   } catch (error) {
     console.error("Error listing trainees:", error);
     await twilioClient.messages.create({
@@ -265,7 +405,7 @@ async function handleListTrainees(phoneNumber: string, db: Firestore, interactiv
   }
 }
 
-async function handleActiveTrainees(phoneNumber: string, db: Firestore, interactiveService: InteractiveMessageService): Promise<void> {
+async function handleActiveTrainees(phoneNumber: string, db: Firestore): Promise<void> {
   try {
     const traineesRef = db.collection("trainees");
     const querySnapshot = await traineesRef
@@ -281,7 +421,7 @@ async function handleActiveTrainees(phoneNumber: string, db: Firestore, interact
       status: doc.data().status
     }));
 
-    await interactiveService.sendTraineeList(phoneNumber, trainees, 1, querySnapshot.docs.length === 8);
+    await TemplateService.sendTraineeList(phoneNumber, trainees, 1, querySnapshot.docs.length === 8);
   } catch (error) {
     console.error("Error listing active trainees:", error);
     await twilioClient.messages.create({
@@ -292,7 +432,7 @@ async function handleActiveTrainees(phoneNumber: string, db: Firestore, interact
   }
 }
 
-async function handleUpdateTrainee(phoneNumber: string, db: Firestore, interactiveService: InteractiveMessageService): Promise<void> {
+async function handleUpdateTrainee(phoneNumber: string, db: Firestore): Promise<void> {
   setAdminState(phoneNumber, { name: null, isAdmin: true });
   setAdminTempData(phoneNumber, { action: 'update_trainee' });
   
@@ -303,7 +443,7 @@ async function handleUpdateTrainee(phoneNumber: string, db: Firestore, interacti
   });
 }
 
-async function handleRemoveTrainee(phoneNumber: string, db: Firestore, interactiveService: InteractiveMessageService): Promise<void> {
+async function handleRemoveTrainee(phoneNumber: string, db: Firestore): Promise<void> {
   setAdminState(phoneNumber, { name: null, isAdmin: true });
   setAdminTempData(phoneNumber, { action: 'remove_trainee' });
   
@@ -314,28 +454,46 @@ async function handleRemoveTrainee(phoneNumber: string, db: Firestore, interacti
   });
 }
 
-async function handleGenerateCSV(phoneNumber: string, db: Firestore, interactiveService: InteractiveMessageService): Promise<void> {
+async function handleGenerateCSV(phoneNumber: string, db: Firestore): Promise<void> {
   try {
     const traineesRef = db.collection("trainees");
-    const querySnapshot = await traineesRef.where("status", "==", "active").get();
-    
+    const querySnapshot = await traineesRef.get();
     let csvContent = "Name,Phone Number,Remaining Sessions,Status,Joined Date\n";
     querySnapshot.forEach(doc => {
       const data = doc.data();
       csvContent += `"${data.name}","${data.phoneNumber}",${data.remainingSessions || 0},"${data.status}","${data.createdAt?.toDate?.() || 'N/A'}"\n`;
     });
-
-    // For now, just send the CSV content as text
-    // In a real implementation, you'd upload this to a file service and send a link
+    // Write CSV to file in exports directory
+    const timestamp = Date.now();
+    const fileName = `trainees_${timestamp}.csv`;
+    const filePath = path.join(process.cwd(), 'exports', fileName);
+    fs.writeFileSync(filePath, csvContent);
+    // Public URL for download
+    const publicUrl = `${process.env.SERVER_BASE_URL || 'http://localhost:3000'}/exports/${fileName}`;
+    // Send WhatsApp message with download link
     await twilioClient.messages.create({
-      body: `📊 CSV Generated\n\n${csvContent}`,
+      body: `📊 CSV Generated. Download here: ${publicUrl}`,
       from: `whatsapp:${process.env.TWILIO_FROM_WHATSAPP}`,
       to: `whatsapp:${phoneNumber}`
+    });
+    // Send WhatsApp message with CSV as media
+    await twilioClient.messages.create({
+      from: `whatsapp:${process.env.TWILIO_FROM_WHATSAPP}`,
+      to: `whatsapp:${phoneNumber}`,
+      mediaUrl: [publicUrl]
+    });
+    // Delete the CSV file after sending
+    fs.unlink(filePath, (err) => {
+      if (err) {
+        console.error(`Failed to delete CSV file ${filePath}:`, err);
+      } else {
+        console.log(`Deleted CSV file ${filePath}`);
+      }
     });
   } catch (error) {
     console.error("Error generating CSV:", error);
     await twilioClient.messages.create({
-      body: "Sorry, there was an error generating the CSV. Please try again.",
+      body: "Sorry, there was an error generating the CSV. Please try again later.",
       from: `whatsapp:${process.env.TWILIO_FROM_WHATSAPP}`,
       to: `whatsapp:${phoneNumber}`
     });
