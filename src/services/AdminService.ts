@@ -467,6 +467,11 @@ async function handleGenerateCSV(phoneNumber: string, db: Firestore): Promise<vo
     const timestamp = Date.now();
     const fileName = `trainees_${timestamp}.csv`;
     const filePath = path.join(process.cwd(), 'exports', fileName);
+    // Create exports directory if it doesn't exist
+    const exportsDir = path.dirname(filePath);
+    if (!fs.existsSync(exportsDir)) {
+      fs.mkdirSync(exportsDir, { recursive: true });
+    }
     fs.writeFileSync(filePath, csvContent);
     // Public URL for download
     const publicUrl = `${process.env.SERVER_BASE_URL || 'http://localhost:3000'}/exports/${fileName}`;
