@@ -19,8 +19,15 @@ export async function getSuperAdminDetails(phoneNumber: string, db: Firestore): 
 
   if (!querySnapshot.empty) {
     const adminDoc = querySnapshot.docs[0];
+    const adminData = adminDoc.data();
+    console.log(`🔍 Admin document data for ${phoneNumber}:`, adminData);
+    
+    // Try different possible field names for the admin name
+    const adminName = adminData.name || adminData.adminName || adminData.fullName || adminData.displayName || "Coach";
+    console.log(`👤 Admin name resolved as: ${adminName}`);
+    
     return {
-      name: adminDoc.data().name,
+      name: adminName,
       isAdmin: true
     };
   }
