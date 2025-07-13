@@ -105,15 +105,16 @@ export class TemplateService {
    */
   static async sendAdminPanelTemplate(phoneNumber: string, coachName: string): Promise<void> {
     try {
+      console.log(`🔍 Sending admin panel template to ${phoneNumber} with coach name: "${coachName}"`);
       const response = await (twilioClient.messages.create as any)({
         from: `whatsapp:${process.env.TWILIO_FROM_WHATSAPP}`,
         to: `whatsapp:${phoneNumber}`,
         contentSid: 'HX352a3822681ff2a7efe4cea37dc28922',
         templateParameters: { '1': coachName }
       });
-      console.log('Admin panel template sent via Twilio SDK (contentSid):', response.sid);
+      console.log('✅ Admin panel template sent via Twilio SDK (contentSid):', response.sid);
     } catch (error: any) {
-      console.error('Error sending admin panel template via Twilio SDK (contentSid):', error?.message || error);
+      console.error('❌ Error sending admin panel template via Twilio SDK (contentSid):', error?.message || error);
       throw error;
     }
   }
