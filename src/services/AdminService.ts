@@ -487,14 +487,6 @@ async function handleGenerateCSV(phoneNumber: string, db: Firestore): Promise<vo
       to: `whatsapp:${phoneNumber}`,
       mediaUrl: [publicUrl]
     });
-    // Delete the CSV file after sending
-    fs.unlink(filePath, (err) => {
-      if (err) {
-        console.error(`Failed to delete CSV file ${filePath}:`, err);
-      } else {
-        console.log(`Deleted CSV file ${filePath}`);
-      }
-    });
   } catch (error) {
     console.error("Error generating CSV:", error);
     await twilioClient.messages.create({
